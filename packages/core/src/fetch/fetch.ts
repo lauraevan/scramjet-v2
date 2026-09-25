@@ -23,6 +23,7 @@ import {
 	worstFetchSite,
 } from "./headers";
 import { _URL } from "@/shared/snapshot";
+import { parseDomain, ParseResultType } from "parse-domain";
 
 export async function doHandleFetch(
 	handler: ScramjetFetchHandler,
@@ -210,7 +211,42 @@ export async function doNetworkFetch(
 			earlyResponse = BareResponse.fromNativeResponse(resp);
 		}
 	} else {
-		earlyResponse = await handler.client.fetch(reqprops.url, reqprops.init);
+		const canRetry =
+			(request.method === "GET" || request.method === "HEAD") &&
+			request.body == null;
+		let lastError: unknown;
+
+		for (let attempt = 0; attempt < (canRetry ? 2 : 1); attempt++) {
+			try {
+				earlyResponse = await handler.client.fetch(
+					reqprops.url,
+					reqprops.init
+				);
+				lastError = undefined;
+				break;
+			} catch (error) {
+				lastError = error;
+			}
+		}
+
+		if (lastError !== undefined) {
+			const errorContext: typeof handler.hooks.fetch.networkerror.context = {
+				request,
+				parsed,
+				error: lastError,
+			};
+			const errorProps: typeof handler.hooks.fetch.networkerror.props = {};
+			await Tap.dispatch(
+				handler.hooks.fetch.networkerror,
+				errorContext,
+				errorProps
+			);
+			if (errorProps.response) {
+				earlyResponse = errorProps.response;
+			} else {
+				throw lastError;
+			}
+		}
 	}
 
 	const prerespcontext: typeof handler.hooks.fetch.preresponse.context = {
@@ -285,14 +321,13 @@ async function handleBlobOrDataUrlFetch(
 	};
 }
 
-/** Simplified registrable-domain check used for cross-site redirect detection. */
+/** Public-Suffix-List-aware registrable-domain check for redirect SameSite handling. */
 export function registrableDomainForRedirect(hostname: string): string {
-	if (/^[\d.]+$/.test(hostname) || hostname.includes(":")) return hostname;
-	const labels = hostname.split(".");
-	if (labels.length <= 1) return hostname;
-	if (labels[0] === "www") return labels.slice(1).join(".");
-	if (labels.length === 2) return hostname;
-	return labels.slice(-2).join(".");
+	const parsed = parseDomain(hostname);
+	if (parsed.type === ParseResultType.Listed && parsed.domain) {
+		return [parsed.domain, ...parsed.topLevelDomains].join(".");
+	}
+	return hostname;
 }
 
 async function handleCookies(
