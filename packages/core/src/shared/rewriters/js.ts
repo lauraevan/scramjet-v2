@@ -9,6 +9,7 @@ import {
 	_Uint8Array,
 	Object_keys,
 	Performance_now,
+	_Map,
 } from "../snapshot";
 
 // eslint-disable-next-line scramjet-core/no-globals
@@ -20,6 +21,58 @@ type RewriterResult = {
 	tag: string;
 	errors: string[];
 };
+
+const CONSERVATIVE_FLAGS = {
+	destructureRewrites: false,
+	captureErrors: false,
+	scramitize: false,
+	sourcemaps: false,
+};
+const MAX_REWRITE_FAILURE_CACHE = 256;
+const rewriteFailureCache = new _Map<string, true>();
+
+function rewriteFailureKey(
+	js: string | Uint8Array,
+	url: string | null,
+	isModule: boolean
+): string | null {
+	if (
+		!url ||
+		(!url.startsWith("http://") && !url.startsWith("https://"))
+	) {
+		return null;
+	}
+	const length = typeof js === "string" ? js.length : js.byteLength;
+	return `${isModule ? "m" : "s"}:${length}:${url}`;
+}
+
+function rememberPrimaryRewriteFailure(key: string | null): void {
+	if (!key) return;
+	rewriteFailureCache.delete(key);
+	rewriteFailureCache.set(key, true);
+	while (rewriteFailureCache.size > MAX_REWRITE_FAILURE_CACHE) {
+		const oldest = rewriteFailureCache.keys().next().value;
+		if (oldest === undefined) break;
+		rewriteFailureCache.delete(oldest);
+	}
+}
+
+function conservativeRewrite(
+	js: string | Uint8Array,
+	url: string | null,
+	context: ScramjetContext,
+	meta: URLMeta,
+	isModule: boolean
+): RewriterResult {
+	return rewriteJsWasm(
+		js,
+		url,
+		context,
+		meta,
+		isModule,
+		CONSERVATIVE_FLAGS
+	);
+}
 function rewriteJsWasm(
 	input: string | Uint8Array,
 	source: string | null,
@@ -116,6 +169,19 @@ export function rewriteJs(
 	meta: URLMeta,
 	isModule = false
 ): string | Uint8Array {
+	const failureKey = rewriteFailureKey(js, url, isModule);
+
+	if (failureKey && rewriteFailureCache.has(failureKey)) {
+		try {
+			return conservativeRewrite(js, url, context, meta, isModule).js;
+		} catch (error) {
+			if (flagEnabled("allowInvalidJs", context, meta.base)) {
+				return js;
+			}
+			throw error;
+		}
+	}
+
 	try {
 		const res = rewriteJsInner(js, url, context, meta, isModule);
 		let newjs = res.js;
@@ -149,6 +215,7 @@ export function rewriteJs(
 
 		return newjs;
 	} catch (err) {
+		rememberPrimaryRewriteFailure(failureKey);
 		const firstError = err as Error;
 		dbg.warn(
 			"failed rewriting js for",
@@ -162,12 +229,7 @@ export function rewriteJs(
 		// Retry once with the highest-risk transforms disabled before falling
 		// back to the original source.
 		try {
-			const retry = rewriteJsWasm(js, url, context, meta, isModule, {
-				destructureRewrites: false,
-				captureErrors: false,
-				scramitize: false,
-				sourcemaps: false,
-			});
+			const retry = conservativeRewrite(js, url, context, meta, isModule);
 			if (flagEnabled("rewriterLogs", context, meta.base)) {
 				dbg.warn("compatibility rewrite succeeded for", url || "(unknown)");
 			}
