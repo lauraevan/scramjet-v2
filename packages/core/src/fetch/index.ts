@@ -173,6 +173,16 @@ export type FetchHooks = {
 			earlyResponse?: BareResponse;
 		};
 	};
+	networkerror: {
+		context: {
+			request: ScramjetFetchRequest;
+			parsed: ScramjetFetchParsed;
+			error: unknown;
+		};
+		props: {
+			response?: BareResponse;
+		};
+	};
 	preresponse: {
 		context: {
 			request: ScramjetFetchRequest;
