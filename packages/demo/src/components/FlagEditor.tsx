@@ -1,14 +1,19 @@
 import { createStore, css, type Component } from "dreamland/core";
 import type { ScramjetFlags } from "@mercuryworkshop/scramjet";
-import { defaultConfigDev } from "@mercuryworkshop/scramjet";
+import { defaultConfig } from "@mercuryworkshop/scramjet";
 import { cachePlugin, controller } from "..";
+
+const productionFlags: ScramjetFlags = {
+	...defaultConfig.flags,
+	allowFailedIntercepts: true,
+};
 
 const flagStore = createStore<ScramjetFlags>(
 	{
-		...defaultConfigDev.flags,
+		...productionFlags,
 	},
 	{
-		ident: "scramjet-flags",
+		ident: "scramjet-flags-performance-v2",
 		backing: "localstorage",
 		autosave: "auto",
 	}
@@ -58,7 +63,7 @@ const FlagEditor: Component<
 
 	const resetToDefaults = () => {
 		Object.assign(flagStore, {
-			...defaultConfigDev.flags,
+			...productionFlags,
 		});
 		Object.assign(controller.scramjetConfig.flags, flagStore);
 	};
