@@ -31,26 +31,38 @@
 				bottom: 0;
 				z-index: 20;
 				display: none;
+				min-width: 0;
+				min-height: 0;
+				padding: 16px;
 				background: #0f0f0f;
 				color: #e5e7eb;
 				overflow: auto;
-				font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+				box-sizing: border-box;
+				font-family:
+					system-ui,
+					-apple-system,
+					"Segoe UI",
+					sans-serif;
 			}
 			#scramjet-movies-panel.active {
 				display: block;
 			}
-			#scramjet-movies-panel .movies-inner {
-				padding: 28px;
+			#scramjet-movies-panel .movies-header {
+				margin-bottom: 16px;
+				padding-bottom: 12px;
+				border-bottom: 1px solid #222;
 			}
-			#scramjet-movies-panel h1 {
-				margin: 0 0 8px;
-				font-size: 1.4rem;
-				font-weight: 650;
+			#scramjet-movies-panel .movies-header h2 {
+				margin: 0 0 6px;
+				font-size: 1rem;
+				font-weight: 600;
 			}
-			#scramjet-movies-panel p {
+			#scramjet-movies-panel .movies-header p,
+			#scramjet-movies-panel .movies-empty {
 				margin: 0;
-				color: #8f8f8f;
-				font-size: 0.9rem;
+				color: #a8a8a8;
+				line-height: 1.45;
+				font-size: 0.84rem;
 			}
 		</style>
 	</head>
@@ -65,12 +77,11 @@
 				function installMoviesTab() {
 					if (installed) return true;
 
-					const tabBar = document.querySelector(".tab-bar");
 					const browserButton = Array.from(
 						document.querySelectorAll(".tab-button")
 					).find((button) => button.textContent.trim() === "Browser");
 
-					if (!tabBar || !browserButton) return false;
+					if (!browserButton) return false;
 
 					installed = true;
 
@@ -83,7 +94,7 @@
 					const panel = document.createElement("div");
 					panel.id = "scramjet-movies-panel";
 					panel.innerHTML =
-						'<div class="movies-inner"><h1>Movies</h1><p>Movie library coming soon.</p></div>';
+						'<div class="movies-header"><h2>Movies</h2><p>Browse and watch movies from this tab.</p></div><div class="movies-empty">Movie library coming soon.</div>';
 
 					browserButton.insertAdjacentElement("afterend", moviesButton);
 					document.body.appendChild(panel);
