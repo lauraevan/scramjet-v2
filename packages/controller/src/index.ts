@@ -55,6 +55,15 @@ function supportsTransferableStreams(): boolean {
 
 const TRANSFERABLE_STREAMS = supportsTransferableStreams();
 
+function bytesToBase64(bytes: Uint8Array): string {
+	const CHUNK = 0x8000;
+	let binary = "";
+	for (let i = 0; i < bytes.length; i += CHUNK) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+	}
+	return btoa(binary);
+}
+
 export type Config = {
 	prefix: string;
 	scramjetPath: string;
@@ -255,7 +264,8 @@ export class Controller {
 	private cookieSyncChannel = new BroadcastChannel(BROADCASTCHANNEL_NAME);
 
 	private wasmAlreadyFetched = false;
-	private wasmPayload: string | null = null;
+	private wasmBufferPromise: Promise<ArrayBuffer> | null = null;
+	private wasmPayloadPromise: Promise<string> | null = null;
 	private onTabChannelMessage: (e: MessageEvent) => void = (e) => {
 		this.rpc.recieve(e.data);
 	};
@@ -272,14 +282,40 @@ export class Controller {
 		void this.loadSavedCookies();
 	};
 
+	private loadScramjetWasmBuffer(): Promise<ArrayBuffer> {
+		if (!this.wasmBufferPromise) {
+			this.wasmBufferPromise = fetch(this.config.wasmPath, {
+				cache: "force-cache",
+			}).then(async (resp) => {
+				if (!resp.ok) {
+					throw new Error(
+						`Failed to load Scramjet WASM: ${resp.status} ${resp.statusText}`
+					);
+				}
+				return resp.arrayBuffer();
+			});
+		}
+		return this.wasmBufferPromise;
+	}
+
 	private async loadScramjetWasm() {
 		if (this.wasmAlreadyFetched) {
 			return;
 		}
 
-		const resp = await fetch(this.config.wasmPath);
-		setWasm(await resp.arrayBuffer());
+		const buf = await this.loadScramjetWasmBuffer();
+		setWasm(buf);
 		this.wasmAlreadyFetched = true;
+	}
+
+	private loadVirtualWasmPayload(): Promise<string> {
+		if (!this.wasmPayloadPromise) {
+			this.wasmPayloadPromise = this.loadScramjetWasmBuffer().then((buf) => {
+				const b64 = bytesToBase64(new Uint8Array(buf));
+				return `self.WASM = '${b64}';`;
+			});
+		}
+		return this.wasmPayloadPromise;
 	}
 
 	private methods: MethodsDefinition<Controllerbound> = {
@@ -298,27 +334,17 @@ export class Controller {
 				await this.loadSavedCookies();
 
 				if (path === frame.prefix + this.config.virtualWasmPath) {
-					if (!this.wasmPayload) {
-						const resp = await fetch(this.config.wasmPath);
-						const buf = await resp.arrayBuffer();
-						const b64 = btoa(
-							new Uint8Array(buf)
-								.reduce(
-									(data, byte) => (data.push(String.fromCharCode(byte)), data),
-									[] as any
-								)
-								.join("")
-						);
-
-						this.wasmPayload = `self.WASM = '${b64}';`;
-					}
+					const wasmPayload = await this.loadVirtualWasmPayload();
 
 					return [
 						{
-							body: this.wasmPayload,
+							body: wasmPayload,
 							status: 200,
 							statusText: "OK",
-							headers: [["Content-Type", "application/javascript"]],
+							headers: [
+								["Content-Type", "application/javascript"],
+								["Cache-Control", "private, max-age=31536000, immutable"],
+							],
 						},
 						[],
 					];
