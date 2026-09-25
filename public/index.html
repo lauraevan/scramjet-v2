@@ -21,9 +21,107 @@
 		<script src="/controller/controller.api.js"></script>
 		<script type="module" crossorigin src="/assets/index-DnINZY03.js"></script>
 		<link rel="stylesheet" crossorigin href="/assets/index-cUh8D1R6.css">
+
+		<style>
+			#scramjet-movies-panel {
+				position: absolute;
+				top: 29px;
+				left: 0;
+				right: 0;
+				bottom: 0;
+				z-index: 20;
+				display: none;
+				background: #0f0f0f;
+				color: #e5e7eb;
+				overflow: auto;
+				font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+			}
+			#scramjet-movies-panel.active {
+				display: block;
+			}
+			#scramjet-movies-panel .movies-inner {
+				padding: 28px;
+			}
+			#scramjet-movies-panel h1 {
+				margin: 0 0 8px;
+				font-size: 1.4rem;
+				font-weight: 650;
+			}
+			#scramjet-movies-panel p {
+				margin: 0;
+				color: #8f8f8f;
+				font-size: 0.9rem;
+			}
+		</style>
 	</head>
 
 	<body class="light-mode">
 		<div id="app"></div>
+
+		<script>
+			(() => {
+				let installed = false;
+
+				function installMoviesTab() {
+					if (installed) return true;
+
+					const tabBar = document.querySelector(".tab-bar");
+					const browserButton = Array.from(
+						document.querySelectorAll(".tab-button")
+					).find((button) => button.textContent.trim() === "Browser");
+
+					if (!tabBar || !browserButton) return false;
+
+					installed = true;
+
+					const moviesButton = document.createElement("button");
+					moviesButton.type = "button";
+					moviesButton.className = "tab-button";
+					moviesButton.textContent = "Movies";
+					moviesButton.dataset.scramjetMovies = "true";
+
+					const panel = document.createElement("div");
+					panel.id = "scramjet-movies-panel";
+					panel.innerHTML =
+						'<div class="movies-inner"><h1>Movies</h1><p>Movie library coming soon.</p></div>';
+
+					browserButton.insertAdjacentElement("afterend", moviesButton);
+					document.body.appendChild(panel);
+
+					const originalButtons = Array.from(
+						document.querySelectorAll(".tab-button")
+					).filter((button) => button !== moviesButton);
+
+					const closeMovies = () => {
+						panel.classList.remove("active");
+						moviesButton.classList.remove("active");
+					};
+
+					for (const button of originalButtons) {
+						button.addEventListener("click", closeMovies, true);
+					}
+
+					moviesButton.addEventListener("click", () => {
+						for (const button of originalButtons) {
+							button.classList.remove("active");
+						}
+						moviesButton.classList.add("active");
+						panel.classList.add("active");
+					});
+
+					return true;
+				}
+
+				if (!installMoviesTab()) {
+					const observer = new MutationObserver(() => {
+						if (installMoviesTab()) observer.disconnect();
+					});
+					observer.observe(document.documentElement, {
+						childList: true,
+						subtree: true,
+					});
+				}
+			})();
+		</script>
 	</body>
 </html>
