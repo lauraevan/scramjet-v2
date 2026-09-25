@@ -229,6 +229,49 @@ function strippedHeadersFromStored(stored: Response): Headers {
 	return out;
 }
 
+function setRawRequestHeader(
+	rawHeaders: unknown,
+	name: string,
+	value: string
+): void {
+	if (!Array.isArray(rawHeaders)) return;
+	const lower = name.toLowerCase();
+	const headers = rawHeaders as Array<[string, string]>;
+	const index = headers.findIndex(([key]) => key.toLowerCase() === lower);
+	if (index === -1) headers.push([name, value]);
+	else headers[index] = [name, value];
+}
+
+async function bareResponseFromStored(
+	stored: Response,
+	markStale = false
+): Promise<BareResponse> {
+	const headers = strippedHeadersFromStored(stored);
+	const storedAt = parseInt(stored.headers.get(STORED_AT_HEADER) ?? "0", 10);
+	if (storedAt) {
+		headers.set("age", String(Math.floor((Date.now() - storedAt) / 1000)));
+	}
+	if (markStale) {
+		headers.set("warning", '110 - "Response is stale"');
+	}
+
+	const body = NULL_BODY_STATUSES.has(stored.status)
+		? null
+		: await stored.arrayBuffer();
+	return BareResponse.fromNativeResponse(
+		new Response(body, {
+			status: stored.status,
+			statusText: stored.statusText,
+			headers,
+		})
+	);
+}
+
+type StaleCandidate = {
+	stored: Response;
+	allowStaleIfError: boolean;
+};
+
 /**
  * Turn an upstream BareResponse into a BareResponse that:
  *   - has the same headers/status/statusText
@@ -309,6 +352,7 @@ export class HttpCachePlugin extends ManagedPlugin {
 	// preresponse hook below knows not to re-store them. WeakMap keys are
 	// the request objects so entries clean themselves up automatically.
 	private cameFromCache = new WeakMap<ScramjetFetchRequest, true>();
+	private staleCandidates = new WeakMap<ScramjetFetchRequest, StaleCandidate>();
 
 	constructor(options: HttpCachePluginOptions = {}) {
 		super("scramjet-http-cache", []);
@@ -380,39 +424,79 @@ export class HttpCachePlugin extends ManagedPlugin {
 				reqCache !== "reload";
 
 			if (!fresh && !immutable) {
-				// Stale; fall through to the network. (TODO: 304 revalidation.)
+				const staleFor =
+					lifetime === null ? age : Math.max(0, age - lifetime);
+				const staleIfError = cc["stale-if-error"];
+				const allowStaleIfError =
+					staleIfError !== undefined &&
+					cc["must-revalidate"] !== true &&
+					cc["proxy-revalidate"] !== true &&
+					staleFor <= staleIfError;
+
+				const etag = stored.headers.get("etag");
+				const lastModified = stored.headers.get("last-modified");
+				if (etag) {
+					setRawRequestHeader(props.init.headers, "If-None-Match", etag);
+				}
+				if (lastModified) {
+					setRawRequestHeader(
+						props.init.headers,
+						"If-Modified-Since",
+						lastModified
+					);
+				}
+
+				if (etag || lastModified || allowStaleIfError) {
+					this.staleCandidates.set(req, {
+						stored: stored.clone(),
+						allowStaleIfError,
+					});
+				}
 				return;
 			}
 
-			// Build a BareResponse around the stored bytes/headers and hand
-			// it to doNetworkFetch via earlyResponse. The pipeline will then
-			// run rewriteResponseHeaders/rewriteBody/etc. as if we'd just
-			// fetched it.
-			const headers = strippedHeadersFromStored(stored);
-			// Recompute Age the consumer sees so it isn't stuck at storage
-			// time.
-			if (storedAt) {
-				headers.set("age", String(Math.floor((Date.now() - storedAt) / 1000)));
-			}
-
-			const isNullBody = NULL_BODY_STATUSES.has(stored.status);
-			const earlyBody = isNullBody ? null : await stored.arrayBuffer();
-
-			const earlyResponse = BareResponse.fromNativeResponse(
-				new Response(earlyBody, {
-					status: stored.status,
-					statusText: stored.statusText,
-					headers,
-				})
-			);
-
+			// Fresh cache hit: skip the network but keep the normal rewrite
+			// pipeline so frame-specific URLs are still regenerated correctly.
 			this.cameFromCache.set(req, true);
-			props.earlyResponse = earlyResponse;
+			props.earlyResponse = await bareResponseFromStored(stored);
 		});
 
-		// ----- preresponse: cache store -----------------------------------
+		// ----- networkerror: stale-if-error fallback ----------------------
+		this.tap(hooks.networkerror, async (ctx, props) => {
+			const candidate = this.staleCandidates.get(ctx.request);
+			if (!candidate?.allowStaleIfError) return;
+
+			this.staleCandidates.delete(ctx.request);
+			this.cameFromCache.set(ctx.request, true);
+			props.response = await bareResponseFromStored(candidate.stored, true);
+		});
+
+		// ----- preresponse: 304 revalidation + cache store ----------------
 		this.tap(hooks.preresponse, async (ctx, props) => {
 			const req = ctx.request;
+			const staleCandidate = this.staleCandidates.get(req);
+
+			if (staleCandidate && props.response.status === 304) {
+				const storedHeaders = strippedHeadersFromStored(staleCandidate.stored);
+				for (const [key, value] of props.response.rawHeaders) {
+					try {
+						storedHeaders.delete(key);
+						storedHeaders.append(key, value);
+					} catch {}
+				}
+				const restoredBody = NULL_BODY_STATUSES.has(staleCandidate.stored.status)
+					? null
+					: await staleCandidate.stored.arrayBuffer();
+				props.response = BareResponse.fromNativeResponse(
+					new Response(restoredBody, {
+						status: staleCandidate.stored.status,
+						statusText: staleCandidate.stored.statusText,
+						headers: storedHeaders,
+					})
+				);
+			}
+			this.staleCandidates.delete(req);
+
 			// Skip if this body came back via cache.match -- restoring it
 			// would just rewrite the same bytes with a fresh STORED_AT_HEADER
 			// (resetting the freshness clock).
